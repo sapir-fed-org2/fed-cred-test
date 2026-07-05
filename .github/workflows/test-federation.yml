@@ -42,7 +42,7 @@ jobs:
             "event_name:            " + .event_name,
             "ref:                   " + .ref,
             "head_ref:              " + (.head_ref // "null"),
-            "base_ref:              " + (.base_ref // "null")
+            "base_ref:              " + (.base_ref // "null")'
       # ──────────────────────────────────────────────
       # Step 2: Exchange GitHub JWT for Azure AD token
       # This is the actual federation step

